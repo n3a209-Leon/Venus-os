@@ -4445,6 +4445,18 @@ function App() {
                     if (savedSettings.classes && Array.isArray(savedSettings.classes)) {
                         setClasses(savedSettings.classes);
                         try { _sl.set('hw5ren:classes', JSON.stringify(savedSettings.classes)); } catch(ex) {}
+                        // 新裝置修復：activeClass 為空時，比對 year+className 自動選定班級，否則組別/幹部還原會被跳過
+                        try {
+                            if (!safeGet('hw5ren:activeClass') && savedSettings.classes.length > 0) {
+                                var _pick = null;
+                                for (var pi = 0; pi < savedSettings.classes.length; pi++) {
+                                    var pc = savedSettings.classes[pi];
+                                    if (pc.year === savedSettings.schoolYear && pc.className === savedSettings.className) { _pick = pc; break; }
+                                }
+                                if (!_pick) _pick = savedSettings.classes[0];
+                                if (_pick && _pick.id) _sl.set('hw5ren:activeClass', _pick.id);
+                            }
+                        } catch(exA) {}
                     }
                     if (savedSettings.groups && Array.isArray(savedSettings.groups)) {
                         setGroups(savedSettings.groups);
@@ -4491,7 +4503,8 @@ function App() {
                         c++;
                     }
                 }
-                // ── 輔導紀錄：從 Firebase 還原（修復：先前只還原 day: 導致重裝後輔導紀錄消失）──
+                // ── 輔導紀錄：從 Firebase 還原 ──
+                var cCounsel = 0;
                 try {
                     var counselData = await window.fsGetAll(firebaseUid, _pfx+'counsel:');
                     for (var ck in counselData) {
@@ -4499,13 +4512,13 @@ function App() {
                             var cds = ck.replace(_pfx+'counsel:', '');
                             await idbSet(_pfx+'counsel:' + cds, counselData[ck]);
                             try { _sl.set('hw5ren:c:' + _pfx + cds, counselData[ck]); } catch(ex) {}
-                            c++;
+                            cCounsel++;
                         }
                     }
                 } catch(exC) {}
                 setDriveStatus('ok');
-                if (c > 0) {
-                    setStor({ state: 'ok', msg: '✅ 雲端還原 ' + c + ' 天資料' });
+                if (c > 0 || cCounsel > 0) {
+                    setStor({ state: 'ok', msg: '✅ 雲端還原 ' + c + ' 天資料、' + cCounsel + ' 天輔導' });
                     await doLoadMonth(curYear, curMonth);
                 } else {
                     setStor({ state: 'ok', msg: '✅ 雲端就緒' });
