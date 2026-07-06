@@ -6012,29 +6012,6 @@ function App() {
                         if ((log.errors||[]).length === 0) {
                             out += '\n✅ 沒有記錄到錯誤\n（白屏可能是 Safari 記憶體不足直接殺掉頁面）';
                         }
-                        if (firebaseUid) {
-                            try {
-                                out += '\n--- 雲端資料掃描 ---\n';
-                                var _allCloud = await window.fsGetAll(firebaseUid, '');
-                                var _pfxCount = {};
-                                for (var _ck in _allCloud) {
-                                    var _m = _ck.indexOf('day:') >= 0 ? 'day:' : (_ck.indexOf('counsel:') >= 0 ? 'counsel:' : null);
-                                    if (_m) {
-                                        var _p = _ck.slice(0, _ck.indexOf(_m)) + _m;
-                                        _pfxCount[_p] = (_pfxCount[_p] || 0) + 1;
-                                    }
-                                }
-                                for (var _pk in _pfxCount) {
-                                    out += '[' + _pk + '] × ' + _pfxCount[_pk] + ' 筆\n';
-                                }
-                                if (Object.keys(_pfxCount).length === 0) out += '（雲端沒有任何 day:/counsel: 資料）\n';
-                                out += '\n--- 本機鑰匙 ---\n';
-                                out += '目前前綴：[' + classPrefix() + ']\n';
-                                out += 'year：[' + (_sl.get('hw5ren:year')||'') + ']\n';
-                                out += 'className：[' + (_sl.get('hw5ren:className')||'') + ']\n';
-                                out += 'activeClass：[' + (safeGet('hw5ren:activeClass')||'') + ']\n';
-                            } catch(exScan) { out += '雲端掃描失敗：' + exScan + '\n'; }
-                        }
                         alert(out);
                         return;
                     } catch(ex) { alert('無法讀取日誌：' + ex); return; }
