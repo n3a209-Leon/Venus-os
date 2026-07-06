@@ -4469,28 +4469,49 @@ function App() {
                     if (savedSettings.semStart1) { setSemStart1(savedSettings.semStart1); try { _sl.set('hw5ren:semStart1', savedSettings.semStart1); } catch(ex) {} }
                     if (savedSettings.semStart2) { setSemStart2(savedSettings.semStart2); try { _sl.set('hw5ren:semStart2', savedSettings.semStart2); } catch(ex) {} }
                 }
-                // ── 幹部資料：按當前班級從 Firebase 還原 ──
+                // ── 幹部與組別版本：依全部班級從 Firebase 還原（避免其他班級在新裝置上永遠空白）──
                 try {
-                    var _aid2 = safeGet('hw5ren:activeClass');
-                    if (_aid2) {
-                        var savedOfficers = await window.fsGet(firebaseUid, 'officers:' + _aid2);
-                        if (savedOfficers && (savedOfficers["1"] || savedOfficers["2"])) {
-                            setOfficers(savedOfficers);
-                            _sl.set('hw5ren:officers:' + _aid2, JSON.stringify(savedOfficers));
+                    var _curActive = safeGet('hw5ren:activeClass');
+                    if (savedSettings && savedSettings.classes && Array.isArray(savedSettings.classes) && savedSettings.classes.length > 0) {
+                        for (var _ci = 0; _ci < savedSettings.classes.length; _ci++) {
+                            var _clsObj = savedSettings.classes[_ci];
+                            if (!_clsObj || !_clsObj.id) continue;
+                            var _cid = _clsObj.id;
+                            // 幹部
+                            try {
+                                var _ofData = await window.fsGet(firebaseUid, 'officers:' + _cid);
+                                if (_ofData && (_ofData["1"] || _ofData["2"])) {
+                                    _sl.set('hw5ren:officers:' + _cid, JSON.stringify(_ofData));
+                                    if (_cid === _curActive) setOfficers(_ofData);
+                                }
+                            } catch(exOf) {}
+                            // 組別版本
+                            try {
+                                var _gvData = await window.fsGet(firebaseUid, 'groupVersions:' + _cid);
+                                if (_gvData && _gvData.versions && Array.isArray(_gvData.versions) && _gvData.versions.length > 0) {
+                                    _sl.set('hw5ren:groupVersions:' + _cid, JSON.stringify(_gvData.versions));
+                                    if (_cid === _curActive) setGroupVersions(_gvData.versions);
+                                }
+                            } catch(exGv) {}
                         }
+                    } else if (_curActive) {
+                        // fallback：savedSettings.classes 不存在時，保留原本單一班級還原路徑
+                        try {
+                            var savedOfficers = await window.fsGet(firebaseUid, 'officers:' + _curActive);
+                            if (savedOfficers && (savedOfficers["1"] || savedOfficers["2"])) {
+                                setOfficers(savedOfficers);
+                                _sl.set('hw5ren:officers:' + _curActive, JSON.stringify(savedOfficers));
+                            }
+                        } catch(exOf2) {}
+                        try {
+                            var savedVersions = await window.fsGet(firebaseUid, 'groupVersions:' + _curActive);
+                            if (savedVersions && savedVersions.versions && Array.isArray(savedVersions.versions) && savedVersions.versions.length > 0) {
+                                setGroupVersions(savedVersions.versions);
+                                _sl.set('hw5ren:groupVersions:' + _curActive, JSON.stringify(savedVersions.versions));
+                            }
+                        } catch(exGv2) {}
                     }
-                } catch(ex) {}
-                // ── 組別版本：按當前班級從 Firebase 還原 ──
-                try {
-                    var _aid3 = safeGet('hw5ren:activeClass');
-                    if (_aid3) {
-                        var savedVersions = await window.fsGet(firebaseUid, 'groupVersions:' + _aid3);
-                        if (savedVersions && savedVersions.versions && Array.isArray(savedVersions.versions) && savedVersions.versions.length > 0) {
-                            setGroupVersions(savedVersions.versions);
-                            _sl.set('hw5ren:groupVersions:' + _aid3, JSON.stringify(savedVersions.versions));
-                        }
-                    }
-                } catch(ex) {}
+                } catch(exAll) {}
                 // ── 作業資料 ──
                 var _pfx = classPrefix();
                 var allData = await window.fsGetAll(firebaseUid, _pfx+'day:');
@@ -6012,6 +6033,46 @@ function App() {
                         if ((log.errors||[]).length === 0) {
                             out += '\n✅ 沒有記錄到錯誤\n（白屏可能是 Safari 記憶體不足直接殺掉頁面）';
                         }
+                        if (firebaseUid) {
+                            try {
+                                out += '\n--- 雲端資料掃描 ---\n';
+                                var _allCloud = await window.fsGetAll(firebaseUid, '');
+                                var _pfxCount = {};
+                                for (var _ck in _allCloud) {
+                                    var _m = _ck.indexOf('day:') >= 0 ? 'day:' : (_ck.indexOf('counsel:') >= 0 ? 'counsel:' : null);
+                                    if (_m) {
+                                        var _p = _ck.slice(0, _ck.indexOf(_m)) + _m;
+                                        _pfxCount[_p] = (_pfxCount[_p] || 0) + 1;
+                                    }
+                                }
+                                for (var _pk in _pfxCount) {
+                                    out += '[' + _pk + '] × ' + _pfxCount[_pk] + ' 筆\n';
+                                }
+                                if (Object.keys(_pfxCount).length === 0) out += '（雲端沒有任何 day:/counsel: 資料）\n';
+                                out += '\n--- 本機鑰匙 ---\n';
+                                out += '目前前綴：[' + classPrefix() + ']\n';
+                                out += 'year：[' + (_sl.get('hw5ren:year')||'') + ']\n';
+                                out += 'className：[' + (_sl.get('hw5ren:className')||'') + ']\n';
+                                out += 'activeClass：[' + (safeGet('hw5ren:activeClass')||'') + ']\n';
+                            } catch(exScan) { out += '雲端掃描失敗：' + exScan + '\n'; }
+                        }
+                        if (firebaseUid) {
+                            out += '\n--- 輔導紀錄診斷 ---\n';
+                            try {
+                                var _grSnap = await firebase.firestore().collection('users').doc(firebaseUid).collection('guidanceRecords').get();
+                                out += '不排序直接讀：' + _grSnap.size + ' 筆\n';
+                            } catch(exG1) { out += '不排序直接讀失敗：' + (exG1.code || '') + ' ' + (exG1.message || exG1) + '\n'; }
+                            try {
+                                var _grSnap2 = await firebase.firestore().collection('users').doc(firebaseUid).collection('guidanceRecords').orderBy('timestamp','desc').get();
+                                out += 'orderBy 讀取：' + _grSnap2.size + ' 筆\n';
+                            } catch(exG2) { out += 'orderBy 讀取失敗：' + (exG2.code || '') + ' ' + (exG2.message || exG2) + '\n'; }
+                            out += 'grRecords state：' + grRecords.length + ' 筆\n';
+                            out += 'authed：' + authed + '\n';
+                        }
+                        out += '\n--- 組別診斷 ---\n';
+                        out += 'groups 組數：' + groups.length + '\n';
+                        out += 'ALL_MEMBERS 座號數：' + ALL_MEMBERS.length + '\n';
+                        out += 'activeClass：' + (safeGet('hw5ren:activeClass') || '(空)') + '\n';
                         alert(out);
                         return;
                     } catch(ex) { alert('無法讀取日誌：' + ex); return; }
@@ -7533,8 +7594,22 @@ function App() {
                         className: "gr-search", placeholder: "搜尋座號、類別、內容…",
                         value: grSearch, onChange: function(e) { setGrSearch(e.target.value); }
                     }),
+                    React.createElement("div", { className: "gr-tabs", style:{marginBottom:10} },
+                        React.createElement("button", {
+                            className: "gr-tab" + (grFilter === '7' ? " active" : ""),
+                            onClick: function() { setGrFilter('7'); }
+                        }, isNerv ? "7D" : "近 7 天"),
+                        React.createElement("button", {
+                            className: "gr-tab" + (grFilter === '30' ? " active" : ""),
+                            onClick: function() { setGrFilter('30'); }
+                        }, isNerv ? "30D" : "近 30 天"),
+                        React.createElement("button", {
+                            className: "gr-tab" + (grFilter === 'all' ? " active" : ""),
+                            onClick: function() { setGrFilter('all'); }
+                        }, isNerv ? "ALL" : "全部")
+                    ),
                     grFilteredRecords().length === 0
-                        ? React.createElement("div", { className: "gr-empty" }, isNerv ? "// NO LOG FOUND //" : "無符合紀錄")
+                        ? React.createElement("div", { className: "gr-empty" }, isNerv ? "// NO LOG FOUND //" : "此時間範圍內無紀錄，可切換上方時間篩選")
                         : grFilteredRecords().map(function(r) {
                             return React.createElement("div", { key: r.id, className: "gr-record-item", style:{position:"relative"} },
                                 React.createElement("div", { style:{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:6} },
