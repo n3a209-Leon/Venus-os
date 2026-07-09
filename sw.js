@@ -1,58 +1,96 @@
-請修復 fresh2.html 的一個雲端同步 bug：登入後的雲端還原只下載作業資料（day:），沒有下載輔導紀錄（counsel:），導致重裝或換裝置後單日輔導紀錄消失。資料仍在 Firestore，只需補上下載邏輯。
+// ═══════════════════════════════════════════════════════
+// sw.js — 作業記錄 PWA Service Worker
+// 策略：Cache First（離線優先）
+// 每次 App 更新時修改 CACHE_VERSION 讓舊快取失效
+// ═══════════════════════════════════════════════════════
 
-【修改前必做】
-1. cp fresh2.html fresh2.html.bak
-2. grep -n "fsGetAll(firebaseUid, _pfx+'day:')" fresh2.html 定位（約 4484 行，登入後雲端還原 useEffect 內，注意不要選到約 3235 行那個 _arcPfx 的）
-3. 只用 view_range 讀該處 ±30 行，禁止讀整個檔案（1.3MB 會爆 token）
+const CACHE_VERSION = 'hw-tracker-v4';
+const CACHE_NAME = CACHE_VERSION;
 
-【要找的目標程式碼】
+// 需要快取的資源（App 本體）
+const PRECACHE_URLS = [
+  './',
+  './index.html',
+];
 
-                var _pfx = classPrefix();
-                var allData = await window.fsGetAll(firebaseUid, _pfx+'day:');
-                var c = 0;
-                for (var k in allData) {
-                    if (k.startsWith(_pfx+'day:')) {
-                        var ds = k.replace(_pfx+'day:', '');
-                        await idbSet(_pfx+'day:' + ds, allData[k]);
-                        try { _sl.set('hw5ren:' + _pfx + ds, allData[k]); } catch(ex) {}
-                        c++;
-                    }
-                }
+// ── Install：預快取 App 本體 ──
+self.addEventListener('install', function(event) {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(function(cache) {
+      return cache.addAll(PRECACHE_URLS);
+    }).then(function() {
+      // 強制跳過等待，立即生效
+      return self.skipWaiting();
+    })
+  );
+});
 
-【修改方式】用 str_replace 在上面那段結尾的 } 之後插入：
+// ── Activate：清除舊版快取 ──
+self.addEventListener('activate', function(event) {
+  event.waitUntil(
+    caches.keys().then(function(keys) {
+      return Promise.all(
+        keys.filter(function(key) {
+          return key !== CACHE_NAME;
+        }).map(function(key) {
+          return caches.delete(key);
+        })
+      );
+    }).then(function() {
+      // 立即接管所有頁面
+      return self.clients.claim();
+    })
+  );
+});
 
-                // ── 輔導紀錄：從 Firebase 還原（修復：先前只還原 day: 導致重裝後輔導紀錄消失）──
-                var cCounsel = 0;
-                try {
-                    var counselData = await window.fsGetAll(firebaseUid, _pfx+'counsel:');
-                    for (var ck in counselData) {
-                        if (ck.startsWith(_pfx+'counsel:')) {
-                            var cds = ck.replace(_pfx+'counsel:', '');
-                            await idbSet(_pfx+'counsel:' + cds, counselData[ck]);
-                            try { _sl.set('hw5ren:c:' + _pfx + cds, counselData[ck]); } catch(ex) {}
-                            cCounsel++;
-                        }
-                    }
-                } catch(exC) {}
+// ── Fetch：攔截請求 ──
+self.addEventListener('fetch', function(event) {
+  var url = new URL(event.request.url);
 
-【接著】找到同一個 useEffect 稍後的還原完成訊息：
-setStor({ state: 'ok', msg: '✅ 雲端還原 ' + c + ' 天資料' });
-改為：
-setStor({ state: 'ok', msg: '✅ 雲端還原 ' + c + ' 天資料、' + cCounsel + ' 天輔導' });
-並把該行的條件 if (c > 0) 改為 if (c > 0 || cCounsel > 0)
+  // Firebase / Google API 請求：永遠走網路，不快取
+  if (
+    url.hostname.includes('firestore.googleapis.com') ||
+    url.hostname.includes('firebase') ||
+    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('google.com') ||
+    url.hostname.includes('gstatic.com') ||
+    url.hostname.includes('cdnjs.cloudflare.com')
+  ) {
+    // 網路優先，失敗就讓它失敗（Firebase 自己有離線處理）
+    event.respondWith(fetch(event.request).catch(function() {
+      return new Response('', { status: 503 });
+    }));
+    return;
+  }
 
-【重要規則】
-- counselData 的值原樣寫入，不要 JSON.parse 再 stringify
-- localStorage 備援 key 必須是 'hw5ren:c:' + pfx + 日期（對應 loadCounsel 讀取格式）
-- 不要動 doSync、scheduleAutoSync、loadCounsel、saveCounsel、sw.js
-
-【修改後必做驗證】
-1. wc -c fresh2.html 確認 > 0
-2. grep -n "cCounsel" fresh2.html 確認至少出現 4 次
-3. 靜態分析必須兩項都是 0：
-python3 -c "
-t=open('fresh2.html').read()
-print('() diff:', t.count('(')-t.count(')'))
-print('{} diff:', t.count('{')-t.count('}'))
-"
-4. 完成後以「✅ 靜態分析通過，直接上傳 GitHub 即可，不需要再跑一次」結尾。
+  // App 本體：Cache First → 有快取直接用，沒有再去網路抓
+  event.respondWith(
+    caches.match(event.request).then(function(cached) {
+      if (cached) {
+        // 背景更新：有快取直接回傳，同時偷偷去網路更新快取
+        var fetchPromise = fetch(event.request).then(function(response) {
+          if (response && response.status === 200 && response.type === 'basic') {
+            var responseToCache = response.clone();
+            caches.open(CACHE_NAME).then(function(cache) {
+              cache.put(event.request, responseToCache);
+            });
+          }
+          return response;
+        }).catch(function() {});
+        // 回傳快取版本（不等背景更新）
+        return cached;
+      }
+      // 沒有快取 → 去網路抓，並存入快取
+      return fetch(event.request).then(function(response) {
+        if (!response || response.status !== 200 || response.type !== 'basic') {
+          return response;
+        }
+        var responseToCache = response.clone();
+        caches.open(CACHE_NAME).then(function(cache) {
+          cache.put(event.request, responseToCache);
+        });
+        return response;
+      });
+    })
+  );
+});
