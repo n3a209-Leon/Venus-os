@@ -4,7 +4,7 @@
 // 每次 App 更新時修改 CACHE_VERSION 讓舊快取失效
 // ═══════════════════════════════════════════════════════
 
-const CACHE_VERSION = 'hw-tracker-v6';
+const CACHE_VERSION = 'hw-tracker-v7';
 const CACHE_NAME = CACHE_VERSION;
 
 // 需要快取的資源（App 本體）
