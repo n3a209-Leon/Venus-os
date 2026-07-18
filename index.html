@@ -4997,6 +4997,7 @@ function App() {
             if (saveOk) {
                 markSynced();
                 setDriveStatus('ok');
+                maybeWeeklySnapshot();
                 return keys.length;
             }
             setDriveStatus('error');
@@ -5005,6 +5006,103 @@ function App() {
         catch (_a) {
             setDriveStatus('error');
             return 0;
+        }
+    }
+    // ── 每週自動快照（純雲端回滾點；不動本機 IDB / localStorage 資料）──
+    async function maybeWeeklySnapshot() {
+        try {
+            if (!firebaseUid) return;
+            var pfx = classPrefix();
+            if (!pfx) return;
+            var classKey = pfx.replace(/:$/, '');
+            var todayS = today();
+            var _dayDiff = function(a, b) {
+                var da = new Date(a + 'T00:00:00').getTime();
+                var db = new Date(b + 'T00:00:00').getTime();
+                if (isNaN(da) || isNaN(db)) return 999;
+                return Math.floor((db - da) / 86400000);
+            };
+            // 本機快速路徑：<7 天直接跳過，零雲端呼叫
+            var lastLocal = _sl.get('hw5ren:wsLastDate') || '';
+            if (lastLocal && _dayDiff(lastLocal, todayS) < 7) return;
+            // 雲端 meta 二次確認（換裝置後本機無紀錄時避免重複建立）
+            var metaRaw = await window.fsGet(firebaseUid, 'weeklySnapshotMeta');
+            var meta = metaRaw ? (typeof metaRaw === 'string' ? safeJSON(metaRaw, {}) : metaRaw) : {};
+            var snaps = Array.isArray(meta.snapshots) ? meta.snapshots.slice() : [];
+            if (meta.lastDate && _dayDiff(meta.lastDate, todayS) < 7) {
+                _sl.set('hw5ren:wsLastDate', meta.lastDate);
+                return;
+            }
+            // 建立快照（結構鏡射 yearArchive，供未來還原沿用）
+            var keys = await idbKeys();
+            var days = {};
+            var totalDays = 0;
+            for (var i = 0; i < keys.length; i++) {
+                var k = keys[i];
+                if (typeof k === 'string' && k.indexOf(pfx + 'day:') === 0) {
+                    try { var raw = await idbGet(k); if (raw) { days[k] = raw; totalDays++; } } catch(eGet) {}
+                }
+            }
+            var wsActiveId = _sl.get('hw5ren:activeClass') || '';
+            var gvRaw = _sl.get('hw5ren:groupVersions:' + wsActiveId);
+            var ofRaw = _sl.get('hw5ren:officers:' + wsActiveId);
+            var classSizeVal = parseInt(_sl.get('hw5ren:classSize') || '40', 10) || 40;
+            var snapshot = {
+                archivedAt: Date.now(),
+                year: schoolYear || '',
+                className: className || '',
+                schoolName: schoolName || '',
+                days: days,
+                groupVersions: gvRaw ? safeJSON(gvRaw, []) : [],
+                officers: ofRaw ? safeJSON(ofRaw, {}) : {},
+                classSize: classSizeVal,
+                stats: { totalDays: totalDays }
+            };
+            var json = JSON.stringify(snapshot);
+            var snapKey = 'weeklySnapshot:' + classKey + ':' + todayS;
+            var partsCount = 0;
+            if (json.length > 900000) {
+                var chunkSize = 900000;
+                var parts = [];
+                for (var p = 0; p < json.length; p += chunkSize) parts.push(json.slice(p, p + chunkSize));
+                partsCount = parts.length;
+                for (var pi = 0; pi < parts.length; pi++) {
+                    await window.fsSet(firebaseUid, snapKey + ':part' + (pi + 1), parts[pi]);
+                }
+                await window.fsSet(firebaseUid, snapKey, JSON.stringify({ parts: parts.length, archivedAt: snapshot.archivedAt, year: snapshot.year, className: snapshot.className, schoolName: snapshot.schoolName, stats: snapshot.stats }));
+            } else {
+                await window.fsSet(firebaseUid, snapKey, json);
+            }
+            // 保留策略：本 classKey 只留最近 4 份，刪除更舊者（含其分段）
+            snaps.push({ date: todayS, key: snapKey, parts: partsCount });
+            var mine = [];
+            var others = [];
+            for (var si = 0; si < snaps.length; si++) {
+                var sk = snaps[si] && snaps[si].key;
+                if (typeof sk === 'string' && sk.indexOf('weeklySnapshot:' + classKey + ':') === 0) mine.push(snaps[si]);
+                else others.push(snaps[si]);
+            }
+            mine.sort(function(a, b){ return (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)); });
+            while (mine.length > 4) {
+                var old = mine.shift();
+                try {
+                    await window.fsDelete(firebaseUid, old.key);
+                    if (old.parts && old.parts > 0) {
+                        for (var dpi = 1; dpi <= old.parts; dpi++) await window.fsDelete(firebaseUid, old.key + ':part' + dpi);
+                    }
+                } catch(eDelOld) {}
+            }
+            var kept = others.concat(mine);
+            await window.fsSet(firebaseUid, 'weeklySnapshotMeta', { lastDate: todayS, snapshots: kept, lastError: '' });
+            _sl.set('hw5ren:wsLastDate', todayS);
+        } catch(eWs) {
+            // 靜默失敗：絕不影響同步，僅回寫 lastError 供診斷面板顯示
+            try {
+                var mRaw = await window.fsGet(firebaseUid, 'weeklySnapshotMeta');
+                var mObj = mRaw ? (typeof mRaw === 'string' ? safeJSON(mRaw, {}) : mRaw) : {};
+                mObj.lastError = String((eWs && eWs.message) || eWs);
+                await window.fsSet(firebaseUid, 'weeklySnapshotMeta', mObj);
+            } catch(eWs2) {}
         }
     }
     // Header subtitle
@@ -5338,7 +5436,7 @@ function App() {
                         try { await window.fsSet(firebaseUid, 'officers:' + _cid2, officers); }
                         catch(e4) { fsOk = false; }
                     }
-                    if (fsOk) { setDriveStatus("ok"); markSynced(); }
+                    if (fsOk) { setDriveStatus("ok"); markSynced(); maybeWeeklySnapshot(); }
                     else { setDriveStatus("error"); }
                 }
             }
@@ -6585,6 +6683,14 @@ function App() {
                         out += 'groups 組數：' + groups.length + '\n';
                         out += 'ALL_MEMBERS 座號數：' + ALL_MEMBERS.length + '\n';
                         out += 'activeClass：' + (safeGet('hw5ren:activeClass') || '(空)') + '\n';
+                        out += '\n--- 每週快照診斷 ---\n';
+                        try {
+                            var _wsRaw = await window.fsGet(firebaseUid, 'weeklySnapshotMeta');
+                            var _wsm = _wsRaw ? (typeof _wsRaw === 'string' ? safeJSON(_wsRaw, {}) : _wsRaw) : {};
+                            out += '最後快照：' + (_wsm.lastDate || '(尚無)') + '\n';
+                            out += '現存快照數：' + ((_wsm.snapshots || []).length) + '\n';
+                            out += '最近錯誤：' + (_wsm.lastError ? _wsm.lastError : '無') + '\n';
+                        } catch(exWs) { out += '快照狀態讀取失敗：' + exWs + '\n'; }
                         alert(out);
                         return;
                     } catch(ex) { alert('無法讀取日誌：' + ex); return; }
